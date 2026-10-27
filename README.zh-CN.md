@@ -209,7 +209,7 @@ sim_stop()
 - `create_primitive` 支持 `Box`、`Sphere`、`Cylinder`、`Capsule`。`mass=0` 是静态碰撞体（地面/墙）；`mass>0` 是受重力的动态物体。
 - `run_simulation` 一次完成「启动观测 → 等待 → 返回 summary + 抽样轨迹」。可设 `stop_when_settled=true` 提前结束；长实验用 `start_simulation` + 状态/结果轮询。
 - `check_physics_health` 会区分正确的静态体、动态体，以及缺少碰撞几何的物体，是排查「穿地」最快的方法。
-- `capture_screenshot` 写入 `<save dir>/screenshots/`，内容取决于当前 `Viewpoint`，先 `set_viewpoint` 取景。
+- `capture_screenshot` 写入 `<save dir>/screenshots/`（默认 JPEG），内容取决于当前 `Viewpoint`，先 `set_viewpoint` 取景。PNG 会被无损重新压缩（Webots 导出的 PNG 几乎不压缩，1955×1344 约 7.9 MB）；`scale`（需要 Pillow）可缩小尺寸。暂停时 Webots 不重绘：如果场景或视角变了但图像与上一张字节相同，结果会带 `stale: true`，此时先 `sim_resume(real_time)` 再截图，或传 `render_steps=1`（仿真时间会前进）。
 - 快照只保存节点位姿，不保存速度、接触状态或世界文件。
 
 ## 目录

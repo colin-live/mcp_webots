@@ -39,6 +39,10 @@ TIME_STEP = int(supervisor.getBasicTimeStep())
 root_node = supervisor.getRoot()
 root_children = root_node.getField("children")
 
+# Simulation clock; set by mcp_server.py once it exists (tools that need to
+# advance the world, e.g. capture_screenshot(render_steps=N), go through it).
+clock = None
+
 if root_children is None:
     raise RuntimeError("Webots root.children is unavailable")
 

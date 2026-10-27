@@ -208,7 +208,7 @@ Useful details:
 - `create_primitive` builds `Box`, `Sphere`, `Cylinder`, or `Capsule` solids. `mass=0` creates a static collider (floor/wall); `mass>0` creates a dynamic body.
 - `run_simulation` starts an observation, waits for it, and returns a summary plus sampled trajectory frames. Set `stop_when_settled=true` to end early, or use `start_simulation` + status/result polling for long runs.
 - `check_physics_health` distinguishes bodies that are correctly static, dynamic, or missing collision geometry — often the fastest way to diagnose objects that fall through the floor.
-- `capture_screenshot` writes to `<save dir>/screenshots/` and reflects the current `Viewpoint`; frame the scene with `set_viewpoint` first.
+- `capture_screenshot` writes to `<save dir>/screenshots/` (JPEG by default) and reflects the current `Viewpoint`; frame the scene with `set_viewpoint` first. PNGs are re-compressed losslessly (Webots exports them almost uncompressed, ~7.9 MB at 1955×1344); `scale` (needs Pillow) shrinks the image. Webots does not redraw while paused, so the result carries `stale: true` when the image is byte-identical to the previous one although the scene or viewpoint changed — resume in `real_time` first, or pass `render_steps=1` (advances simulation time).
 - Snapshot tools store node poses only. They do not snapshot velocities, contacts, or the world file.
 
 ## Repository layout

@@ -77,6 +77,7 @@ clock = Clock(supervisor, TIME_STEP, log, on_reset=after_reset,
               idle_sleep=config.IDLE_SLEEP, sync_gui=config.SYNC_GUI)
 ipc = IpcClient(config.IPC_ADDR, config.IPC_TOKEN, _static_info(), clock, log)
 clock.on_state = ipc.notify_state
+runtime.clock = clock
 
 log.info("==== Webots Supervisor (IPC) initialized ====")
 log.info("Host IPC: %s | time step: %s ms | %d tools exported",
