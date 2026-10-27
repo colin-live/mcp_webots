@@ -58,7 +58,7 @@ env = dict(os.environ,
            WEBOTS_MCP_SUPERVISOR_DIR=str(SUPERVISOR_DIR), WEBOTS_MCP_PYTHON=sys.executable,
            WEBOTS_MCP_PROJECTS_DIR=str(projects), WEBOTS_HOME=str(fakehome),
            FAKE_WEBOTS_STATE_DIR=str(flags), MCP_SERVER_DIR=str(SUPERVISOR_DIR), WEBOTS_MCP_SAVE_DIR=str(tmp / "save"),
-           FAKE_WEBOTS_MAX_SECONDS="240", WEBOTS_MCP_LOG="info")
+           FAKE_WEBOTS_MAX_SECONDS="240", WEBOTS_MCP_LOG="info", WEBOTS_MCP_RELOAD_TIMEOUT_S="3")
 log_path = tmp / "host.log"
 host = subprocess.Popen([str(HOST)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(log_path, "w", encoding="utf-8"),
                         env=env, text=True, encoding="utf-8", bufsize=1)
@@ -169,6 +169,16 @@ try:
     d = call("sim_reset", kind="reload")
     check("reload -> supervisor reconnects", d["status"] == "success" and d["supervisor"]["session"] > before, d)
     check("tools work after reload", call("get_simulation_info")["status"] == "success")
+
+    # Regression: reload where Webots keeps running but the controller never comes back.
+    (flags / "stall.flag").write_text("1")
+    t0 = time.time()
+    d = call("sim_reset", kind="reload")
+    check("stalled reload recovers via restart (no hang)", d.get("status") == "success" and d.get("recovered_via") == "restart", d)
+    check("stalled reload finished promptly", time.time() - t0 < 40, time.time() - t0)
+    st = call("sim_status")
+    check("supervisor connected after recovery", st["supervisor"]["connected"] is True and st["webots"]["running"] is True, st)
+    check("tools work after stalled reload", call("get_simulation_info")["status"] == "success")
 
     check("double sim_start rejected", call("sim_start")["error_type"] == "AlreadyRunning")
     d = call("sim_reset", kind="restart")

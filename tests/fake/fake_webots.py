@@ -21,7 +21,7 @@ CHILD = (
 )
 
 print("fake webots args:", sys.argv[1:], flush=True)
-for name in ("reload.flag", "quit.flag"):
+for name in ("reload.flag", "quit.flag", "stall.flag"):
     try:
         os.remove(os.path.join(STATE, name))
     except OSError:
@@ -35,6 +35,14 @@ while time.time() < DEADLINE:
     if os.path.exists(os.path.join(STATE, "reload.flag")):
         os.remove(os.path.join(STATE, "reload.flag"))
         time.sleep(0.4)
+        if os.path.exists(os.path.join(STATE, "stall.flag")):
+            # Real Webots quirk: a reloaded world that stays paused never launches its
+            # controller, so the process lives on with no supervisor.
+            os.remove(os.path.join(STATE, "stall.flag"))
+            print("fake webots: reload (controller NOT restarted)", flush=True)
+            while time.time() < DEADLINE:
+                time.sleep(0.2)
+            sys.exit(3)
         print("fake webots: reload", flush=True)
         continue
     print("fake webots: controller exited rc=%s" % rc, flush=True)

@@ -22,6 +22,12 @@ pub struct Config {
     pub call_timeout: Duration,
     /// How long `sim_start` waits for the Supervisor to connect.
     pub connect_timeout: Duration,
+    /// How long `sim_reset(reload)` waits for the Supervisor to reconnect before
+    /// falling back to a clean restart of Webots.
+    pub reload_timeout: Duration,
+    /// How long a lifecycle tool (start/stop/restart/reload) waits for another
+    /// lifecycle operation to finish before failing with a clear error.
+    pub lifecycle_wait: Duration,
     /// Resume a paused world automatically for run_simulation / start_simulation.
     pub auto_resume: bool,
     /// Command that starts the project manager (None = feature disabled).
@@ -69,6 +75,13 @@ impl Config {
                 .unwrap_or_default(),
             call_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(60),
+            reload_timeout: Duration::from_secs_f64(
+                env("WEBOTS_MCP_RELOAD_TIMEOUT_S")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|v| v.clamp(1.0, 120.0))
+                    .unwrap_or(10.0),
+            ),
+            lifecycle_wait: Duration::from_secs(5),
             auto_resume: env("WEBOTS_MCP_AUTO_RESUME")
                 .map(|v| v != "0")
                 .unwrap_or(true),

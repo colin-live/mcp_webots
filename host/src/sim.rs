@@ -89,6 +89,18 @@ fn secs(args: &Value, key: &str, default: f64, lo: f64, hi: f64) -> Duration {
     Duration::from_secs_f64(v)
 }
 
+/// Holds the lifecycle lock and clears the "who holds it" marker on drop.
+struct LifecycleGuard<'a> {
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    slot: &'a std::sync::Mutex<Option<(&'static str, Instant)>>,
+}
+
+impl Drop for LifecycleGuard<'_> {
+    fn drop(&mut self) {
+        *self.slot.lock().unwrap() = None;
+    }
+}
+
 pub struct SimController {
     cfg: Arc<Config>,
     link: Arc<SupervisorLink>,
@@ -96,6 +108,9 @@ pub struct SimController {
     last_world: Mutex<Option<PathBuf>>,
     /// Serializes start / stop / restart / reload.
     lifecycle: Mutex<()>,
+    /// Which lifecycle operation currently holds `lifecycle`, and since when,
+    /// so a blocked caller gets a clear error instead of a bare client timeout.
+    lifecycle_op: std::sync::Mutex<Option<(&'static str, Instant)>>,
 }
 
 impl SimController {
@@ -106,6 +121,31 @@ impl SimController {
             link,
             last_world: Mutex::new(None),
             lifecycle: Mutex::new(()),
+            lifecycle_op: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Take the lifecycle lock for `op`, waiting at most `cfg.lifecycle_wait`.
+    /// If another lifecycle operation is still running, fail fast with an error that
+    /// names it (a held lock used to make start/stop hang until the client timed out).
+    async fn lock_lifecycle(&self, op: &'static str) -> Result<LifecycleGuard<'_>, Outcome> {
+        match tokio::time::timeout(self.cfg.lifecycle_wait, self.lifecycle.lock()).await {
+            Ok(guard) => {
+                *self.lifecycle_op.lock().unwrap() = Some((op, Instant::now()));
+                Ok(LifecycleGuard { _guard: guard, slot: &self.lifecycle_op })
+            }
+            Err(_) => {
+                let busy = self.lifecycle_op.lock().unwrap().map(|(name, since)| (name, since.elapsed().as_secs()));
+                let message = match busy {
+                    Some((name, secs)) => format!("另一个生命周期操作（{name}）已执行 {secs} 秒仍未结束，{op} 无法开始。"),
+                    None => format!("另一个生命周期操作仍在进行，{op} 无法开始。"),
+                };
+                Err(Outcome::err(
+                    "LifecycleBusy",
+                    message,
+                    Some("稍等片刻后用 sim_status 查看状态；如果 Webots 在运行但 supervisor 未连接，等待当前操作结束后调用 sim_restart。"),
+                ))
+            }
         }
     }
 
@@ -179,16 +219,25 @@ impl SimController {
     pub async fn call_native(&self, name: &str, args: &Value) -> Option<Outcome> {
         Some(match name {
             "sim_start" => {
-                let _guard = self.lifecycle.lock().await;
+                let _guard = match self.lock_lifecycle("sim_start").await {
+                    Ok(g) => g,
+                    Err(o) => return Some(o),
+                };
                 self.start_locked(args).await
             }
             "sim_stop" => {
-                let _guard = self.lifecycle.lock().await;
+                let _guard = match self.lock_lifecycle("sim_stop").await {
+                    Ok(g) => g,
+                    Err(o) => return Some(o),
+                };
                 let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
                 Outcome::ok(self.stop_locked(force).await)
             }
             "sim_restart" => {
-                let _guard = self.lifecycle.lock().await;
+                let _guard = match self.lock_lifecycle("sim_restart").await {
+                    Ok(g) => g,
+                    Err(o) => return Some(o),
+                };
                 self.restart_locked(args).await
             }
             "sim_pause" => self.clock_op("pause", json!({}), Duration::from_secs(10)).await,
@@ -301,25 +350,44 @@ impl SimController {
             Some("physics") => self.clock_op("reset_physics", json!({}), Duration::from_secs(10)).await,
             Some("simulation") => self.clock_op("reset", json!({}), Duration::from_secs(30)).await,
             Some("reload") => {
-                let _guard = self.lifecycle.lock().await;
+                let _guard = match self.lock_lifecycle("sim_reset(reload)").await {
+                    Ok(g) => g,
+                    Err(o) => return o,
+                };
                 let Some(before) = self.link.session().map(|s| s.session) else {
                     return link_err(&LinkError::NotConnected);
                 };
                 if let Err(o) = self.control("reload", json!({}), Duration::from_secs(10)).await {
                     return o;
                 }
-                match self.link.wait_session_after(before, Duration::from_secs(60)).await {
+                match self.link.wait_session_after(before, self.cfg.reload_timeout).await {
                     Some(info) => Outcome::ok(json!({"reloaded": true, "supervisor": session_json(&info),
                                                       "simulation": self.link.sim_state()})),
-                    None => Outcome::err(
-                        "ReloadTimeout",
-                        "世界重载后 supervisor 60 秒内没有重新连接。",
-                        Some("检查 Webots 控制台；必要时 sim_restart。"),
-                    ),
+                    None => {
+                        // The world reloaded but the controller never came back (Webots starts
+                        // controllers only while the simulation runs).  Do not leave the session
+                        // wedged with a live process and no supervisor: restart cleanly.
+                        tracing::warn!(
+                            "supervisor did not reconnect within {:?} after reload; restarting Webots",
+                            self.cfg.reload_timeout
+                        );
+                        let outcome = self.restart_locked(&json!({})).await;
+                        if outcome.is_error {
+                            return outcome;
+                        }
+                        let mut v: Value = serde_json::from_str(&outcome.text).unwrap_or_else(|_| json!({}));
+                        v["reloaded"] = json!(true);
+                        v["recovered_via"] = json!("restart");
+                        v["note"] = json!("世界重载后 supervisor 没有重新连接，已自动改为重启 Webots（场景回到世界文件内容，快照和观测任务已丢失）。");
+                        Outcome::ok(v)
+                    }
                 }
             }
             Some("restart") => {
-                let _guard = self.lifecycle.lock().await;
+                let _guard = match self.lock_lifecycle("sim_reset(restart)").await {
+                    Ok(g) => g,
+                    Err(o) => return o,
+                };
                 self.restart_locked(&json!({})).await
             }
             _ => Outcome::err("InvalidArguments", "kind 必须是 physics / simulation / reload / restart 之一。", None),
@@ -356,12 +424,20 @@ impl SimController {
     }
 
     async fn start_locked(&self, args: &Value) -> Outcome {
-        if self.proc.info().await.is_some() || self.link.session().is_some() {
+        let mut recovered_stale = false;
+        if self.link.session().is_some() {
             return Outcome::err(
                 "AlreadyRunning",
-                "Webots 已在运行（或已有 supervisor 连接）。",
+                "Webots 已在运行（已有 supervisor 连接）。",
                 Some("用 sim_restart 重新开始，或先 sim_stop。"),
             );
+        }
+        if self.proc.info().await.is_some() {
+            // Process alive but no supervisor: a reload or crashed controller left it wedged.
+            // Clean up and relaunch instead of refusing (or timing out) on a dead session.
+            tracing::warn!("Webots is running without a connected supervisor; killing it before sim_start");
+            let _ = self.stop_locked(true).await;
+            recovered_stale = true;
         }
         let mode = args.get("mode").and_then(Value::as_str).unwrap_or("pause");
         if !matches!(mode, "pause" | "real_time" | "fast") {
@@ -404,6 +480,10 @@ impl SimController {
         }
         let mut v = self.status_value().await;
         v["started"] = json!(true);
+        if recovered_stale {
+            v["recovered_stale_process"] = json!(true);
+            v["note"] = json!("发现 Webots 进程在运行但 supervisor 未连接，已先清理该进程再重新启动。");
+        }
         Outcome::ok(v)
     }
 
@@ -475,7 +555,8 @@ impl SimController {
             None
         };
         let last_exit = self.proc.last_exit().await;
-        json!({
+        let stale = proc.is_some() && session.is_none();
+        let mut status = json!({
             "webots": {
                 "running": proc.is_some(),
                 "pid": proc.as_ref().map(|p| p.pid),
@@ -485,7 +566,11 @@ impl SimController {
             },
             "supervisor": {"connected": session.is_some(), "info": session.as_ref().map(session_json)},
             "simulation": clock.or_else(|| self.link.sim_state()),
-        })
+        });
+        if stale {
+            status["hint"] = json!("Webots 进程在运行但 supervisor 未连接（启动中，或重载/崩溃后卡住）。若持续如此，调用 sim_start 或 sim_restart 会自动清场并重新启动。");
+        }
+        status
     }
 }
 

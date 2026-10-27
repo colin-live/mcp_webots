@@ -275,9 +275,21 @@ class Clock:
         return self._status(note="runtime-created nodes were removed by the reset")
 
     def _op_reload(self, params, fut):
-        """Reload the world: Webots kills and restarts this controller."""
+        """Reload the world: Webots kills and restarts this controller.
+
+        Webots only launches controllers while the simulation runs.  We keep the
+        world paused (``step(0)``), so if it stayed paused after the reload the
+        new controller process would never start and the host would wait for a
+        supervisor that cannot connect.  Switch to real time first so the
+        restarted controller is launched; it pauses the world again as soon as
+        it connects (``Clock.start``) and the host resets the clock afterwards.
+        """
         fut.set_result(self._status(note="reloading; the supervisor will reconnect"))
         time.sleep(0.1)  # let the IPC thread flush the reply
+        try:
+            self._set_mode("real_time")
+        except Exception:
+            self.log.warning("could not switch to real time before reload", exc_info=True)
         self.sup.worldReload()
         return None
 
