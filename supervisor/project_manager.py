@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from webots_mcp import registry  # noqa: E402  (also configures logging -> stderr)
+from webots_mcp import proto_inline  # noqa: E402
 from webots_mcp.registry import tool  # noqa: E402
 
 PROTOCOL = 1
@@ -285,6 +286,18 @@ def resolve_proto(robot, proto_url, project, worlds_dir):
         hint="Pass proto_url (webots:// or https://...), put <name>.proto in the project's protos/ folder, or set WEBOTS_HOME so the Webots robot library can be searched.")
 
 
+def proto_source_file(url, worlds_dir):
+    """Local .proto file behind an EXTERNPROTO url from resolve_proto, or None if remote."""
+    if url.startswith("webots://"):
+        home = os.environ.get("WEBOTS_HOME")
+        if not home:
+            return None
+        return Path(home) / url[len("webots://"):]
+    if re.match(r"^https?://", url):
+        return None
+    return (worlds_dir / url).resolve()
+
+
 # ------------------------------------------------------------
 # supervisor binding
 # ------------------------------------------------------------
@@ -487,12 +500,15 @@ async def project_write_file(project_name: str, relative_path: str, content: str
 async def world_add_robot(project_name: str, robot: str, world_name: str = "main", def_name: str = "",
                           translation: list[float] | None = None, rotation: list[float] | None = None,
                           controller: str = "", controller_source: str = "", fields: str = "",
-                          proto_url: str = "") -> str:
+                          proto_url: str = "", inline: bool = False) -> str:
     """[世界] 把机器人嵌入世界文件：自动补 EXTERNPROTO 声明并追加节点（改的是 .wbt 文件，不是运行中的场景）。
     robot: PROTO 名（先找项目 protos/<名>.proto，再找 WEBOTS_HOME/projects/robots 下的库）、项目内 .proto 相对路径，
     或配合 proto_url 给 webots:// / https:// 地址。def_name 省略则用 robot 名转大写。
     controller: 控制器名；给出 controller_source（Python 源码）时会写入 controllers/<名>/<名>.py。
     fields: 追加到节点里的原始 VRML 字段行，例如 'supervisor FALSE'。translation/rotation 同 Webots（ENU，z 向上）。
+    注意：PROTO 实例内部声明的 DEF 默认对 Supervisor 不可见（get_node_state("TCP") 会报 Node not found）。
+    两种办法：用点路径访问实例内部 DEF，如 "ARM2DOF.TCP"（返回值 inner_defs 列出可用名字）；
+    或设 inline=true，把 PROTO 主体展开写进世界，内部 DEF 变成普通 DEF（不支持含 %< > % 模板代码的 PROTO，也不支持远程 https PROTO）。
     修改世界文件后需要 sim_restart 或 sim_reset(reload) 才会生效。"""
     project = existing_project(project_name)
     path = world_file(project, world_name)
@@ -504,31 +520,77 @@ async def world_add_robot(project_name: str, robot: str, world_name: str = "main
     if re.search(rf"\bDEF\s+{re.escape(def_name)}\b", text):
         raise Problem("DefExists", f"DEF {def_name} already exists in the world.", hint="Pick another def_name or world_remove_node first.")
     lines = []
+    overrides = {}
     if translation is not None:
         if len(translation) != 3:
             raise Problem("InvalidArguments", "translation needs 3 numbers.")
-        lines.append("translation " + " ".join(repr(float(v)) for v in translation))
+        overrides["translation"] = " ".join(repr(float(v)) for v in translation)
     if rotation is not None:
         if len(rotation) != 4:
             raise Problem("InvalidArguments", "rotation needs 4 numbers [ax, ay, az, angle].")
-        lines.append("rotation " + " ".join(repr(float(v)) for v in rotation))
+        overrides["rotation"] = " ".join(repr(float(v)) for v in rotation)
     warnings = []
     if controller:
         check_name(controller, "controller")
-        lines.append(f'controller "{controller}"')
+        overrides["controller"] = f'"{controller}"'
         ctrl_dir = project / "controllers" / controller
         if controller_source:
             write_text(ctrl_dir / f"{controller}.py", controller_source)
         elif not ctrl_dir.is_dir():
             warnings.append(f"controllers/{controller}/ does not exist yet; pass controller_source or write it with project_write_file.")
-    if fields.strip():
-        lines.extend(l.strip() for l in fields.strip().splitlines())
+    extra_lines = [l.strip() for l in fields.strip().splitlines() if l.strip()] if fields.strip() else []
+
+    src_file = proto_source_file(url, path.parent)
+    parsed = None
+    if src_file is not None and src_file.is_file():
+        try:
+            parsed = proto_inline.parse_proto(read_text(src_file))
+        except proto_inline.InlineError as exc:
+            if inline:
+                raise Problem(exc.kind, str(exc), hint="Use the dotted DEF path (e.g. 'ARM.TCP') instead, or flatten the PROTO into a plain node by hand with project_write_file.")
+
+    if inline:
+        if parsed is None:
+            raise Problem("InlineUnsupported", f"Cannot read the PROTO source for {proto!r} (remote url, or WEBOTS_HOME not set).",
+                          hint="Put the .proto in the project's protos/ folder (or set WEBOTS_HOME) and retry.")
+        try:
+            body = proto_inline.expand_body(parsed)
+            node_inner_defs = proto_inline.inner_defs(body)
+            for line in extra_lines:
+                key, _, value = line.partition(" ")
+                overrides[key] = value.strip()
+            node = proto_inline.build_node(body, def_name, overrides)
+        except proto_inline.InlineError as exc:
+            raise Problem(exc.kind, str(exc))
+        clashes = [d for d in node_inner_defs if re.search(rf"\bDEF\s+{re.escape(d)}\b", text)]
+        if clashes:
+            raise Problem("DefExists", f"DEFs inside the PROTO already exist in the world: {sorted(set(clashes))}.",
+                          hint="Remove the existing nodes, or use the default (non-inline) mode and address inner DEFs as '<def_name>.<inner>'.")
+        for ext in proto_inline.rebase_externprotos(parsed["externprotos"], str(src_file.parent), str(path.parent)):
+            text = insert_externproto(text, ext)
+        text = text.rstrip("\n") + "\n" + node
+        write_text(path, text)
+        return ok(project_name=project_name, world_path=str(path), def_name=def_name, proto=proto, inline=True,
+                  inner_defs=node_inner_defs, warnings=warnings,
+                  note="PROTO body written into the world; inner DEFs are plain DEFs (visible to the Supervisor). "
+                       "World file changed on disk; restart or reload the world for it to take effect.")
+
+    for key, value in overrides.items():
+        lines.append(f"{key} {value}")
+    lines.extend(extra_lines)
     node = f"DEF {def_name} {proto} {{\n" + "".join(f"  {l}\n" for l in lines) + "}\n"
     text = insert_externproto(text, url)
     text = text.rstrip("\n") + "\n" + node
     write_text(path, text)
+    extra = {}
+    if parsed is not None:
+        inner = proto_inline.inner_defs(parsed["body"])
+        if inner:
+            extra = {"inner_defs": inner,
+                     "inner_def_note": f"These DEFs live inside the PROTO instance: address them as '{def_name}.<name>' "
+                                       f"(e.g. '{def_name}.{inner[0]}'), or re-add the robot with inline=true to make them plain DEFs."}
     return ok(project_name=project_name, world_path=str(path), def_name=def_name, proto=proto, proto_url=url,
-              warnings=warnings, note="World file changed on disk; restart or reload the world for it to take effect.")
+              warnings=warnings, note="World file changed on disk; restart or reload the world for it to take effect.", **extra)
 
 
 @tool

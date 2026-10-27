@@ -277,3 +277,12 @@ def require_def_name(name):
     return require_identifier(name, "DEF name")
 
 
+def require_def_ref(ref):
+    """A DEF name, or a dotted path 'PARENT.INNER' into a PROTO instance."""
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("DEF name must be a non-empty string")
+    for part in ref.split("."):
+        require_identifier(part, "DEF name")
+    return ref
+
+

@@ -12,6 +12,7 @@ from .runtime import (
     log,
     require_color,
     require_def_name,
+    require_def_ref,
     require_finite_number,
     require_identifier,
     require_int_range,
@@ -40,8 +41,39 @@ def find_root_node_by_type(node_type):
     return None
 
 
+PROTO_DEF_HINT = (
+    "DEF names declared inside a PROTO body are not visible to the Supervisor by "
+    "plain DEF name. Address them through the PROTO instance with a dotted path "
+    "'<instance DEF>.<inner DEF>', e.g. 'ARM2DOF.TCP' for DEF TCP inside "
+    "DEF ARM2DOF Arm2Dof {...}; get_scene_tree() lists the instance. "
+    "Alternatively add the robot with world_add_robot(inline=true), which writes "
+    "the PROTO body into the world so its inner DEFs become plain DEFs."
+)
+
+
+def resolve_def(ref):
+    """Return the node for a DEF name or a dotted PROTO path, or None.
+
+    'MY_ROBOT.TCP' = DEF TCP defined inside the PROTO instance DEF MY_ROBOT
+    (Node.getFromProtoDef); nested instances chain: 'A.B.C'.
+    """
+    parts = require_def_ref(ref).split(".")
+    node = supervisor.getFromDef(parts[0])
+    for inner in parts[1:]:
+        if node is None:
+            return None
+        lookup = getattr(node, "getFromProtoDef", None)
+        if lookup is None:
+            raise ValueError(
+                "This Webots version cannot look up DEFs inside a PROTO "
+                "(Node.getFromProtoDef is missing); use world_add_robot(inline=true)."
+            )
+        node = lookup(inner)
+    return node
+
+
 def get_node(ref):
-    """Resolve a DEF name, or 'type:<NodeType>' for a root node."""
+    """Resolve a DEF name, 'PARENT.INNER' (DEF inside a PROTO), or 'type:<NodeType>'."""
     if isinstance(ref, str) and ref.startswith("type:"):
         type_name = require_identifier(ref[5:], "node type")
         node = find_root_node_by_type(type_name)
@@ -49,15 +81,15 @@ def get_node(ref):
             raise ValueError(f"No root node of type {type_name} in the world")
         return node
 
-    require_def_name(ref)
-    node = supervisor.getFromDef(ref)
+    node = resolve_def(ref)
 
     if node is None:
         raise ValueError(
             f"Node not found: DEF {ref}. "
             "Use get_scene_tree() to inspect existing DEF names. "
             "A node type name is not a DEF name; for root nodes without a "
-            "DEF use 'type:<NodeType>', e.g. 'type:WorldInfo'."
+            "DEF use 'type:<NodeType>', e.g. 'type:WorldInfo'. "
+            + PROTO_DEF_HINT
         )
 
     return node

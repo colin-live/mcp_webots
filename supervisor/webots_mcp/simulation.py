@@ -10,12 +10,12 @@ from .runtime import (
     distance,
     is_finite_seq,
     log,
-    require_def_name,
+    require_def_ref,
     require_finite_number,
     submit_command,
     supervisor,
 )
-from .scene import has_physics_node, physics_role, safe_node_state
+from .scene import PROTO_DEF_HINT, has_physics_node, physics_role, resolve_def, safe_node_state
 
 # ============================================================
 # Experiment (observation) tasks
@@ -51,7 +51,7 @@ def sample_task(task, now):
 
     for name in task["target_defs"]:
         stats = task["stats"][name]
-        node = supervisor.getFromDef(name)
+        node = resolve_def(name)
 
         if node is None:
             stats["missing"] = True
@@ -377,7 +377,7 @@ def start_task(
     if len(target_defs) > MAX_SIMULATION_TARGETS:
         raise ValueError(f"At most {MAX_SIMULATION_TARGETS} nodes can be tracked")
 
-    names = [require_def_name(n) for n in target_defs]
+    names = [require_def_ref(n) for n in target_defs]
 
     if len(set(names)) != len(names):
         raise ValueError("target_defs contains duplicate DEF names")
@@ -402,11 +402,12 @@ def start_task(
 
     targets = []
     for name in names:
-        node = supervisor.getFromDef(name)
+        node = resolve_def(name)
         if node is None:
             raise ValueError(
                 f"Target DEF not found: {name}. "
-                "Call get_scene_tree() to inspect valid DEF names."
+                "Call get_scene_tree() to inspect valid DEF names. "
+                + PROTO_DEF_HINT
             )
         targets.append({
             "def": name,
