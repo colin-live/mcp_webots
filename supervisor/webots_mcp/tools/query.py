@@ -180,6 +180,8 @@ async def check_physics_health(
     """[查询] 物理健康检查：把每个 Solid 分类为 dynamic / static_collider / no_collision，
     并标出异常：动态体没有 boundingObject、没有任何静态碰撞体、跑出世界很远的失控物体、
     速度过高（可能穿透薄地面）。实验结果异常（物体一直下落、穿地）时先调用它。
+    还会检测初始互相穿插（initial_penetrations）：开跑前就嵌在一起的 Sphere/Box 碰撞体（未旋转的盒子）
+    会在第一步被弹开，表现为 t=0 的速度突增；其他形状和旋转的盒子不检查。
     注意 static_collider 的 physics 为 null 是正确配置。"""
 
     def operation():
