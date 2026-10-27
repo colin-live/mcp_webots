@@ -5,7 +5,7 @@ from ..registry import tool
 
 from ..config import MAX_TREE_DEPTH
 from ..physics import physics_health
-from ..runtime import TIME_STEP, call_main, require_finite_number, require_identifier, require_int_range, tool_error
+from ..runtime import TIME_STEP, call_main, require_finite_number, require_identifier, require_int_range, supervisor, tool_error
 from ..scene import collect_scene_tree, field_value, find_nodes_by_type, get_node, physics_role, safe_node_state
 from ..snapshots import contact_tracking
 
@@ -83,37 +83,91 @@ async def get_nodes_by_type(type_name: str) -> str:
     return await call_main("get_nodes_by_type", operation)
 
 
+TOUCH_TOLERANCE = 1e-3  # metres: two tracked nodes report "the same" contact point
+
+
+def _node_label(node_id):
+    """(DEF name or None, type name or None) of the node with this id."""
+    try:
+        node = supervisor.getFromId(node_id)
+    except Exception:
+        node = None
+    if node is None:
+        return None, None
+    return (node.getDef() or None), node.getTypeName()
+
+
 @tool
 async def get_contact_points(def_name: str, include_descendants: bool = False) -> str:
-    """[查询] 查询节点当前的接触点（世界坐标）及对方节点 id。
+    """[查询] 查询节点当前的接触点（世界坐标）。
 
-    首次调用会开启该节点的接触点跟踪，结果可能为空；
-    仿真前进一步后再调用即可。节点需要 boundingObject 和 Physics。
+    每个接触点的 node_id 是“该接触点所属的 Solid”的 id（被查询节点本身，include_descendants=true 时
+    也可能是它的子孙 Solid），不是对方节点；owner_def / owner_type 给出它的 DEF 和类型。
+    对方节点 Webots 不直接提供：如果对方也在被跟踪（对它调用过 get_contact_points），
+    会在 touching 里列出位置重合的那些节点（只覆盖已跟踪节点，没有列出不代表没接触）。
+
+    接触点只在“开启跟踪之后”的仿真步里记录：首次调用只是开启跟踪（tracking_started=true，结果为空），
+    之前发生的碰撞查不到。要观察碰撞，请在碰撞发生前先对相关节点调用一次，再推进仿真。
+    以 include_descendants=false 开启后再改用 true，会自动重新开启跟踪（之后才有数据）。
+    节点需要 boundingObject 和 Physics。
     """
 
     def operation():
         node = get_node(def_name)
-        first_time = node.getId() not in contact_tracking
+        node_id = node.getId()
+        want = bool(include_descendants)
+        started = node_id not in contact_tracking
+        restarted = not started and want and not contact_tracking[node_id]
 
-        if first_time:
-            node.enableContactPointsTracking(TIME_STEP, bool(include_descendants))
-            contact_tracking.add(node.getId())
+        if started or restarted:
+            node.enableContactPointsTracking(TIME_STEP, want)
+            contact_tracking[node_id] = want
 
-        points = [
-            {"point": list(p.point), "node_id": p.node_id}
-            for p in node.getContactPoints(bool(include_descendants))
-        ]
+        # Other tracked nodes' points, to guess who a contact is with.
+        others = []
+        for other_id, flag in contact_tracking.items():
+            if other_id == node_id:
+                continue
+            other = supervisor.getFromId(other_id)
+            if other is None:
+                continue
+            others.append((other_id, other.getDef() or None, [list(p.point) for p in other.getContactPoints(flag)]))
 
-        return {
+        points = []
+        for p in node.getContactPoints(want):
+            owner_def, owner_type = _node_label(p.node_id)
+            touching = [
+                {"id": oid, "def": odef}
+                for oid, odef, pts in others
+                if any(all(abs(a - b) <= TOUCH_TOLERANCE for a, b in zip(p.point, q)) for q in pts)
+            ]
+            points.append({
+                "point": list(p.point),
+                "node_id": p.node_id,
+                "owner_def": owner_def,
+                "owner_type": owner_type,
+                "touching": touching,
+            })
+
+        result = {
             "status": "success",
             "def": def_name,
+            "node_id": node_id,
             "contact_count": len(points),
             "contacts": points,
-            "note": (
-                "Contact tracking was just enabled; call again after the "
-                "next step." if first_time else None
-            ),
+            "tracking_started": started or restarted,
         }
+        if started or restarted:
+            result["note"] = (
+                "Contact tracking was just enabled: contacts are only recorded from the next "
+                "simulation step on, earlier collisions cannot be recovered. Call again after stepping."
+            )
+        elif not points:
+            result["note"] = (
+                "No contact points in the last step. Tracking is on; contacts only appear while the "
+                "bodies touch during a simulated step."
+            )
+        return result
 
     return await call_main("get_contact_points", operation)
 

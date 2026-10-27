@@ -6,7 +6,8 @@ from .runtime import root_children
 # ============================================================
 
 snapshots = {}
-contact_tracking = set()
+# node id -> include_descendants flag it was enabled with (contact tracking is per node)
+contact_tracking = {}
 
 
 def default_snapshot_defs():
