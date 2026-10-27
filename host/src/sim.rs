@@ -202,7 +202,7 @@ impl SimController {
             tool(
                 "sim_reset",
                 "[时钟] 重置仿真。kind: physics=只清零所有物理状态（时间和场景不变）；\
-                 simulation=时间归零并恢复为已保存的世界（运行时创建的节点会被删除，先 save_world 才能保留）；\
+                 simulation=时间归零并恢复为已保存的世界文件（运行时创建且没有 save_world 过的节点会被删除，已写进 .wbt 的节点仍然存在）；\
                  reload=重载世界并重启 supervisor（快照和观测任务丢失）；restart=结束并重新启动 Webots。重置后仿真处于暂停状态。",
                 json!({"type": "object", "properties": {
                     "kind": {"type": "string", "enum": ["physics", "simulation", "reload", "restart"]}

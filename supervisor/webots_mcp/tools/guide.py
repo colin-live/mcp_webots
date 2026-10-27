@@ -7,6 +7,17 @@ from ..config import SERVER_VERSION
 from ..registry import TOOL_NAMES
 from ..runtime import result_json
 
+# Tools that live outside this controller (see host/src/sim.rs and project_manager.py).
+HOST_TOOLS = [
+    "sim_start", "sim_stop", "sim_restart", "sim_pause", "sim_resume",
+    "sim_step", "sim_reset", "sim_status",
+]
+PROJECT_TOOLS = [
+    "project_list", "project_create", "project_info", "project_check",
+    "project_delete", "project_read_file", "project_write_file",
+    "world_add_robot", "world_remove_node", "supervisor_bind",
+]
+
 # ------------------------------------------------------------
 # [指南]
 # ------------------------------------------------------------
@@ -18,7 +29,16 @@ async def get_workflow_guide() -> str:
         "status": "success",
         "server_version": SERVER_VERSION,
         "registered_tools": TOOL_NAMES,
+        "host_tools": HOST_TOOLS,
+        "project_tools": PROJECT_TOOLS,
+        "tool_sources": (
+            "registered_tools: 本控制器（Supervisor）提供，仅在 Webots 运行且 supervisor 已连接时可用；"
+            "host_tools: Rust 宿主提供的时钟/生命周期工具，随时可用（新会话先 sim_start）；"
+            "project_tools: 项目管理进程提供，Webots 未启动也可用。"
+        ),
         "categories": {
+            "时钟（宿主）": HOST_TOOLS,
+            "项目（project manager）": PROJECT_TOOLS,
             "查询": [
                 "get_scene_tree", "get_node_details", "get_node_state",
                 "get_nodes_by_type", "get_contact_points", "validate_scene",
@@ -31,7 +51,7 @@ async def get_workflow_guide() -> str:
             ],
             "修改": [
                 "set_node_field", "set_node_pose", "import_into_field",
-                "set_world_physics", "set_contact_properties",
+                "set_world_physics", "set_contact_properties", "set_joint_position",
             ],
             "物理": [
                 "set_node_velocity", "apply_force", "apply_torque",
@@ -65,7 +85,7 @@ async def get_workflow_guide() -> str:
             "但仿真时间不前进，run_simulation / start_simulation 需要仿真运行（宿主默认会自动恢复）",
             "仿真的启动/暂停/继续/单步/重置/重启由宿主工具负责：sim_start、sim_pause、sim_resume、"
             "sim_step、sim_reset、sim_restart、sim_stop、sim_status",
-            "sim_reset(kind='simulation') 会删除运行时创建的节点：需要保留请先 save_world",
+            "sim_reset(kind='simulation') 恢复为已保存的世界文件：运行时创建且没有 save_world 过的节点会被删除，已写进 .wbt 的节点仍在",
             "Solid 默认没有碰撞和物理：缺少 boundingObject 不会碰撞，缺少 Physics 不会运动",
             "静态地面/墙 = 有 boundingObject、physics 为 null（这是正确的）；"
             "动态物体 = 有 boundingObject + Physics",

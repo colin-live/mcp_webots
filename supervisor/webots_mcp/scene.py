@@ -95,6 +95,53 @@ def get_node(ref):
     return node
 
 
+JOINT_PARAM_TYPES = {  # joint type -> {axis: parameters node type}
+    "HingeJoint": {1: "HingeJointParameters"},
+    "Hinge2Joint": {1: "HingeJointParameters", 2: "JointParameters"},
+    "SliderJoint": {1: "JointParameters"},
+}
+
+
+def iter_joints():
+    return (n for n in iter_all_nodes() if n.getTypeName() in JOINT_PARAM_TYPES)
+
+
+def _joint_params_field(joint, axis):
+    types = JOINT_PARAM_TYPES.get(joint.getTypeName())
+    if types is None:
+        raise ValueError(
+            f"{joint.getTypeName()} is not a HingeJoint / Hinge2Joint / SliderJoint")
+    if axis not in types:
+        raise ValueError(f"{joint.getTypeName()} has no axis {axis}")
+    field = joint.getField("jointParameters" if axis == 1 else "jointParameters2")
+    if field is None:
+        raise ValueError(f"{joint.getTypeName()} has no jointParameters field for axis {axis}")
+    return field, types[axis]
+
+
+def get_joint_position(joint, axis=1):
+    """Current `position` (rad or m) of a joint axis; 0.0 when no parameters node exists."""
+    field, _ = _joint_params_field(joint, axis)
+    params = field.getSFNode()
+    if params is None:
+        return 0.0
+    pos = params.getField("position")
+    return float(pos.getSFFloat()) if pos is not None else 0.0
+
+
+def set_joint_position(joint, position, axis=1):
+    """Write the joint's `position` field (a Supervisor write moves the endPoint)."""
+    field, params_type = _joint_params_field(joint, axis)
+    params = field.getSFNode()
+    if params is None:
+        field.importSFNodeFromString(f"{params_type} {{ position {fmt(position)} }}")
+        return
+    pos = params.getField("position")
+    if pos is None:
+        raise ValueError("jointParameters has no position field")
+    pos.setSFFloat(float(position))
+
+
 def has_physics_node(node):
     field = node.getField("physics")
     return field is not None and field.getSFNode() is not None
@@ -435,17 +482,23 @@ def collect_scene_tree(max_depth=MAX_TREE_DEPTH, include_fields=False):
     seen_defs = set()
     duplicate_defs = []
     truncated = False
+    cut_by_depth = 0
+    cut_by_limit = False
 
     def visit(node, parent_id, field_name, depth):
-        nonlocal truncated
+        nonlocal truncated, cut_by_depth, cut_by_limit
 
         node_id = node.getId()
 
         if node_id in visited:
             return
 
-        if len(nodes) >= MAX_TREE_NODES or depth > max_depth:
+        if len(nodes) >= MAX_TREE_NODES:
+            truncated = cut_by_limit = True
+            return
+        if depth > max_depth:
             truncated = True
+            cut_by_depth += 1
             return
 
         visited.add(node_id)
@@ -473,7 +526,7 @@ def collect_scene_tree(max_depth=MAX_TREE_DEPTH, include_fields=False):
 
     visit(root_node, None, None, 0)
 
-    return {
+    result = {
         "status": "success",
         "node_count": len(nodes),
         "truncated": truncated,
@@ -481,6 +534,16 @@ def collect_scene_tree(max_depth=MAX_TREE_DEPTH, include_fields=False):
         "duplicate_defs": sorted(set(duplicate_defs)),
         "nodes": nodes,
     }
+    if cut_by_depth:
+        result["truncated_by_depth"] = cut_by_depth
+        result["hint"] = (
+            f"{cut_by_depth} node(s) deeper than max_depth={max_depth} were left out "
+            "(joint chains such as link -> joint -> endPoint nest deeply). "
+            f"Pass a larger max_depth (up to {MAX_TREE_DEPTH})."
+        )
+    if cut_by_limit:
+        result["truncated_by_node_limit"] = MAX_TREE_NODES
+    return result
 
 
 def find_nodes_by_type(type_name):

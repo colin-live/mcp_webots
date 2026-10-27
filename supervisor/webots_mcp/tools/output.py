@@ -1,5 +1,6 @@
 """Output tools (screenshot, world save)."""
 import asyncio
+from pathlib import Path
 
 from ..registry import tool
 
@@ -7,7 +8,13 @@ import re
 from .. import imaging, runtime
 from ..config import SAVE_DIR, SCREENSHOT_DIR
 from ..runtime import call_main, require_int_range, result_json, submit_command, supervisor, tool_error
-from ..scene import find_root_node_by_type
+from ..scene import (
+    JOINT_PARAM_TYPES,
+    find_root_node_by_type,
+    get_joint_position,
+    iter_joints,
+    set_joint_position,
+)
 
 # ------------------------------------------------------------
 # [输出]
@@ -115,40 +122,106 @@ async def capture_screenshot(filename: str = "screenshot.jpg", quality: int = 90
         return tool_error("capture_screenshot", exc)
 
 
-@tool
-async def save_world(filename: str = "") -> str:
-    """[输出] 保存当前世界。filename 为空时覆盖当前世界文件；
-    否则保存为 <SAVE_DIR>/<filename>（只接受不含目录的 .wbt 文件名）。"""
-    try:
-        if not filename:
-            def operation():
-                supervisor.worldSave()
-                return {"status": "success",
-                        "message": "worldSave() invoked for the current world file."}
-            return await call_main("save_world", operation)
+_JOINT_POS_RE = re.compile(r"(?:HingeJointParameters|JointParameters)\s*\{[^{}]*?\bposition\s+([-+0-9.eE]+)")
 
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.wbt", filename):
+
+def _nonzero_saved_joints(path):
+    """How many joint `position` values in the saved .wbt are not 0 (None if unreadable)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return sum(1 for m in _JOINT_POS_RE.finditer(text) if abs(float(m.group(1))) > 1e-9)
+
+
+async def _step_boundary():
+    """Wait until the main loop has run at least one more iteration (scene updates applied)."""
+    await asyncio.to_thread(submit_command, lambda: None)
+
+
+@tool
+async def save_world(filename: str = "", reset_joints: bool = False) -> str:
+    """[输出] 保存当前世界。filename 为空时覆盖当前世界文件；
+    否则保存为 <SAVE_DIR>/<filename>（只接受不含目录的 .wbt 文件名）。
+    Webots 会把此刻的关节角（HingeJointParameters.position）和连杆姿态写进 .wbt，重新加载就是“弯着”的初始姿态。
+    reset_joints=true：保存前临时把所有关节位置置 0（假定 0 是想要的初始姿态），保存后恢复原来的关节角，
+    运行中的场景不受影响；返回里的 saved_nonzero_joints 是对保存结果的复查（应为 0）。
+    也可以先用 set_joint_position 手动摆好姿态再保存。"""
+    try:
+        if filename and not re.fullmatch(r"[A-Za-z0-9_.-]+\.wbt", filename):
             raise ValueError("filename must be a plain name ending in .wbt")
 
-        SAVE_DIR.mkdir(parents=True, exist_ok=True)
-        path = SAVE_DIR / filename
+        saved_joints = []   # (joint node, axis, previous position)
+        warnings = []
 
-        def operation():
-            ok = supervisor.worldSave(str(path))
-            if ok is False or ok == -1:
-                raise RuntimeError("Webots reported that saving the world failed")
-            return str(path)
+        if reset_joints:
+            def zero_joints():
+                for joint in iter_joints():
+                    for axis in JOINT_PARAM_TYPES[joint.getTypeName()]:
+                        before = get_joint_position(joint, axis)
+                        if before != 0.0:
+                            saved_joints.append((joint, axis, before))
+                            set_joint_position(joint, 0.0, axis)
+                return len(saved_joints)
 
-        await asyncio.to_thread(submit_command, operation)
+            await asyncio.to_thread(submit_command, zero_joints)
+            if saved_joints:
+                await _step_boundary()   # let Webots apply the new joint positions
 
-        for _ in range(30):  # saving may complete at the end of the step
-            if path.is_file():
-                return result_json({"status": "success", "saved_to": str(path)})
-            await asyncio.sleep(0.1)
+        try:
+            if not filename:
+                def operation():
+                    supervisor.worldSave()
+                    return supervisor.getWorldPath()
 
-        raise RuntimeError(f"Webots save returned but {path} was not created")
+                world_path = await asyncio.to_thread(submit_command, operation)
+                await _step_boundary()
+                result = {"status": "success",
+                          "message": "worldSave() invoked for the current world file."}
+                path = Path(world_path) if world_path else None
+            else:
+                SAVE_DIR.mkdir(parents=True, exist_ok=True)
+                path = SAVE_DIR / filename
+
+                def operation():
+                    ok = supervisor.worldSave(str(path))
+                    if ok is False or ok == -1:
+                        raise RuntimeError("Webots reported that saving the world failed")
+                    return str(path)
+
+                await asyncio.to_thread(submit_command, operation)
+
+                for _ in range(30):  # saving may complete at the end of the step
+                    if path.is_file():
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    raise RuntimeError(f"Webots save returned but {path} was not created")
+                result = {"status": "success", "saved_to": str(path)}
+        finally:
+            if saved_joints:
+                def restore():
+                    for joint, axis, before in saved_joints:
+                        set_joint_position(joint, before, axis)
+
+                try:
+                    await asyncio.to_thread(submit_command, restore)
+                except Exception as exc:  # never hide the save result behind a restore failure
+                    warnings.append(f"could not restore the original joint positions: {exc}")
+
+        if reset_joints:
+            result["joints_reset"] = len(saved_joints)
+            nonzero = _nonzero_saved_joints(path) if path is not None else None
+            result["saved_nonzero_joints"] = nonzero
+            if nonzero:
+                warnings.append(
+                    f"{nonzero} joint position(s) in the saved file are still non-zero "
+                    "(Webots may not have applied the reset before saving; call sim_step count=1 "
+                    "while paused and save again, or use set_joint_position first)."
+                )
+        if warnings:
+            result["warnings"] = warnings
+        return result_json(result)
 
     except Exception as exc:
         return tool_error("save_world", exc)
-
-

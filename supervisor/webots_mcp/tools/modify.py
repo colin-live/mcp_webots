@@ -5,8 +5,15 @@ from ..registry import tool
 
 import re
 from ..config import MAX_VRML_LENGTH
-from ..runtime import call_main, fmt, require_finite_number, require_rotation, vector
-from ..scene import apply_field_value, field_value, get_node, has_physics_node
+from ..runtime import call_main, fmt, require_finite_number, require_int_range, require_rotation, vector
+from ..scene import (
+    apply_field_value,
+    field_value,
+    get_joint_position,
+    get_node,
+    has_physics_node,
+    set_joint_position as set_joint_position_value,
+)
 from typing import Any
 
 # ------------------------------------------------------------
@@ -223,3 +230,26 @@ async def set_contact_properties(
     return await call_main("set_contact_properties", operation)
 
 
+@tool
+async def set_joint_position(def_name: str, position: float, axis: int = 1) -> str:
+    """[修改] 直接设置关节位置（HingeJoint / Hinge2Joint / SliderJoint，单位 rad 或 m），不经过电机，
+    等价于把 jointParameters.position 写成目标值；没有 jointParameters 时会自动创建。
+    def_name 可以是 PROTO 内部关节的点路径，如 "ARM2DOF.JOINT1"。axis: 1 或 2（Hinge2Joint 的第二根轴）。
+    这是“摆姿态/复位”工具，不是电机控制；需要电机跟踪目标请在机器人自己的控制器里调用 Motor.setPosition。"""
+
+    def operation():
+        require_int_range(axis, "axis", 1, 2)
+        value = require_finite_number(position, "position")
+        node = get_node(def_name)
+        before = get_joint_position(node, axis)
+        set_joint_position_value(node, value, axis)
+        return {
+            "status": "success",
+            "def": def_name,
+            "type": node.getTypeName(),
+            "axis": axis,
+            "previous_position": before,
+            "position": value,
+        }
+
+    return await call_main("set_joint_position", operation)

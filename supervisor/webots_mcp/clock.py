@@ -258,7 +258,8 @@ class Clock:
 
         Webots applies the reset at the end of a step, so one step is run (the
         world is un-paused for exactly that step) and the world is paused again.
-        Nodes created at run time are removed.
+        Nodes created at run time and never saved to the world file are removed;
+        nodes that were already written to the .wbt (save_world) come back with it.
         """
         if self.state == STEPPING:
             raise RuntimeError("a sim.step is in progress; call pause first")
@@ -272,7 +273,9 @@ class Clock:
         self.state = PAUSED
         if self.sup.step(0) == -1:
             raise RuntimeError("Webots is shutting down")
-        return self._status(note="runtime-created nodes were removed by the reset")
+        return self._status(note=(
+            "Scene restored to the saved world file: nodes created at run time and not yet "
+            "saved with save_world were removed; nodes already stored in the .wbt are present."))
 
     def _op_reload(self, params, fut):
         """Reload the world: Webots kills and restarts this controller.

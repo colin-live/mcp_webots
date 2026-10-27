@@ -5,17 +5,26 @@ from ..registry import tool
 
 from ..runtime import call_main, require_def_name, require_identifier, supervisor
 from ..scene import get_node, has_physics_node
-from ..snapshots import default_snapshot_defs, snapshots
+from ..snapshots import default_snapshot_defs, load_all_snapshots, load_snapshot_file, persist_snapshot, snapshots
 
 # ------------------------------------------------------------
 # [复位]
 # ------------------------------------------------------------
 
+def _valid_name(name):
+    try:
+        require_identifier(name, "snapshot name")
+        return True
+    except ValueError:
+        return False
+
+
 @tool
-async def save_snapshot(name: str, def_names: list[str] | None = None) -> str:
+async def save_snapshot(name: str, def_names: list[str] | None = None, persist: bool = True) -> str:
     """[复位] 记录节点的 translation/rotation 作为快照，用于重复实验。
     def_names 省略时记录所有带 DEF 且有位姿字段的根节点。
-    快照保存在内存中，世界重载后丢失。"""
+    persist=true（默认）时同时写入 <SAVE_DIR>/snapshots/<name>.json：世界重载、sim_restart 甚至新会话后
+    list_snapshots / restore_snapshot 仍能用它作为实验基准（同名文件会被覆盖）。"""
 
     def operation():
         require_identifier(name, "snapshot name")
@@ -43,8 +52,11 @@ async def save_snapshot(name: str, def_names: list[str] | None = None) -> str:
             }
 
         snapshots[name] = data
-        return {"status": "success", "name": name, "node_count": len(data),
-                "nodes": sorted(data)}
+        result = {"status": "success", "name": name, "node_count": len(data),
+                  "nodes": sorted(data)}
+        if persist:
+            result["persisted_to"] = str(persist_snapshot(name, data))
+        return result
 
     return await call_main("save_snapshot", operation)
 
@@ -56,6 +68,8 @@ async def restore_snapshot(name: str) -> str:
 
     def operation():
         data = snapshots.get(name)
+        if data is None:
+            data = load_snapshot_file(name) if _valid_name(name) else None
         if data is None:
             raise ValueError(
                 f"Snapshot not found: {name}. Existing: {sorted(snapshots)}"
@@ -85,13 +99,15 @@ async def restore_snapshot(name: str) -> str:
 
 @tool
 async def list_snapshots() -> str:
-    """[复位] 列出已保存的快照及其包含的节点。"""
-    return await call_main(
-        "list_snapshots",
-        lambda: {
+    """[复位] 列出已保存的快照及其包含的节点（内存 + <SAVE_DIR>/snapshots/*.json）。"""
+
+    def operation():
+        load_all_snapshots()
+        return {
             "status": "success",
             "snapshots": {k: sorted(v) for k, v in snapshots.items()},
-        },
-    )
+        }
+
+    return await call_main("list_snapshots", operation)
 
 
