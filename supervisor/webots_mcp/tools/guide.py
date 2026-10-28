@@ -42,7 +42,7 @@ async def get_workflow_guide() -> str:
             "查询": [
                 "get_scene_tree", "get_node_details", "get_node_state",
                 "get_nodes_by_type", "get_contact_points", "validate_scene",
-                "check_physics_health",
+                "check_physics_health", "get_motors", "get_motor_state",
             ],
             "构建": [
                 "create_primitive", "create_component", "create_components",
@@ -52,6 +52,7 @@ async def get_workflow_guide() -> str:
             "修改": [
                 "set_node_field", "set_node_pose", "import_into_field",
                 "set_world_physics", "set_contact_properties", "set_joint_position",
+                "get_motors", "get_motor_state", "set_motor_target", "enable_motor_torque",
             ],
             "物理": [
                 "set_node_velocity", "apply_force", "apply_torque",
@@ -94,6 +95,7 @@ async def get_workflow_guide() -> str:
             "地面请用足够厚的 Box（>= 0.2 m）；实验结果异常先调用 check_physics_health",
             "apply_force/apply_torque 只作用一个物理步；持续推动请用 set_node_velocity",
             "Webots 世界重载会重启本控制器：场景中未保存的改动、快照和任务都会丢失",
+            "关节摆姿态用 set_joint_position（直接改 jointParameters）；实时电机控制用 get_motors + set_motor_target（走 Motor API）",
         ],
     })
 
