@@ -4,6 +4,7 @@ from . import guide
 from . import query
 from . import build
 from . import modify
+from . import motors
 from . import physics_tools
 from . import experiment
 from . import snapshot_tools
@@ -14,6 +15,7 @@ __all__ = [
     "query",
     "build",
     "modify",
+    "motors",
     "physics_tools",
     "experiment",
     "snapshot_tools",

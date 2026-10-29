@@ -101,10 +101,91 @@ async def set_node_pose(
     return await call_main("set_node_pose", operation)
 
 
+def _scan_vrml_roots(text: str):
+    """Scan a VRML fragment; return ``(root_node_type_names, syntax_error_or_None)``.
+
+    Only checks structure (balanced braces/brackets, every root `{` preceded by a
+    type name); it is not a full VRML parser. Strings and `#` comments are skipped.
+    """
+    roots: list[str] = []
+    tokens: list[str] = []
+    stack: list[str] = []
+    pairs = {"}": "{", "]": "["}
+    pending = ""
+    tok = ""
+    i, n = 0, len(text)
+
+    def line_of(pos: int) -> int:
+        return text.count("\n", 0, pos) + 1
+
+    while i < n:
+        c = text[i]
+        if c == "#":
+            if tok and not stack:
+                tokens.append(tok)
+            tok = ""
+            while i < n and text[i] not in "\r\n":
+                i += 1
+            continue
+        if c == '"':
+            if tok and not stack:
+                tokens.append(tok)
+            tok = ""
+            start = i
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    i += 1
+                i += 1
+            if i >= n:
+                return roots, f"unterminated string starting on line {line_of(start)}"
+            i += 1
+            continue
+        if c in "{[]}":
+            if tok and not stack:
+                tokens.append(tok)
+            tok = ""
+            if c == "{":
+                if not stack:
+                    if not tokens:
+                        return roots, f"line {line_of(i)}: '{{' without a node type name"
+                    pending = tokens[-1]
+                    tokens.clear()
+                stack.append(c)
+            elif c == "[":
+                stack.append(c)
+            else:
+                if not stack or stack[-1] != pairs[c]:
+                    return roots, f"line {line_of(i)}: unmatched '{c}'"
+                stack.pop()
+                if c == "}" and not stack:
+                    roots.append(pending)
+            i += 1
+            continue
+        if c.isspace() or c == ",":
+            if tok and not stack:
+                tokens.append(tok)
+            tok = ""
+            i += 1
+            continue
+        tok += c
+        i += 1
+
+    if tok and not stack:
+        tokens.append(tok)
+    if stack:
+        return roots, f"unclosed '{stack[-1]}'"
+    return roots, None
+
+
 @tool
 async def import_into_field(def_name: str, field_name: str, vrml_string: str) -> str:
     """[修改] 向已有节点的 SFNode / MFNode 字段导入 VRML 子节点，
-    例如给 Solid 添加 physics（SFNode，会替换原值）或追加 children / boundingObject。"""
+    例如给 Solid 添加 physics（SFNode，会替换原值）或追加 children / boundingObject。
+
+    导入失败（语法错误、Webots 拒绝）时返回 error，不再误报 success。
+    注意 HingeJoint 的子刚体字段是 `endPoint Solid { ... }`（不是 start/end），
+    且 endPoint 的值必须写节点类型名。成功时返回 imported_types 供核对。"""
 
     def operation():
         if not isinstance(vrml_string, str) or not vrml_string.strip():
@@ -119,20 +200,58 @@ async def import_into_field(def_name: str, field_name: str, vrml_string: str) ->
             raise ValueError(f"Field not found: {field_name} on {def_name}")
 
         ftype = field.getTypeName()
-
-        if ftype == "SFNode":
-            field.importSFNodeFromString(vrml_string)
-        elif ftype == "MFNode":
-            field.importMFNodeFromString(-1, vrml_string)
-        else:
+        if ftype not in ("SFNode", "MFNode"):
             raise ValueError(f"{field_name} is {ftype}, not SFNode/MFNode")
 
-        return {
+        # Webots reports VRML parse errors only on its own console and the
+        # import call itself never raises, so validate before and verify after.
+        roots, syntax_error = _scan_vrml_roots(vrml_string)
+        if syntax_error:
+            raise ValueError(
+                f"VRML syntax error, nothing was imported: {syntax_error}. "
+                "Every field value that is a node needs its type name, e.g. "
+                "`endPoint Solid { ... }` (HingeJoint has no start/end fields)."
+            )
+        if not roots:
+            raise ValueError("No root node found in vrml_string; expected e.g. `Shape { ... }`")
+
+        if ftype == "SFNode":
+            if len(roots) != 1:
+                raise ValueError(f"SFNode field {field_name} takes exactly 1 root node, got {len(roots)}")
+            before_node = field.getSFNode()
+            before_id = before_node.getId() if before_node is not None else None
+            field.importSFNodeFromString(vrml_string)
+            after_node = field.getSFNode()
+            after_id = after_node.getId() if after_node is not None else None
+            if after_id is None or after_id == before_id:
+                raise ValueError(
+                    f"Import into {def_name}.{field_name} had no effect: Webots rejected the VRML "
+                    "(see the Webots console for the parser error)."
+                )
+            imported = [after_node.getTypeName()]
+        else:
+            before = field.getCount()
+            field.importMFNodeFromString(-1, vrml_string)
+            added = field.getCount() - before
+            if added < len(roots):
+                raise ValueError(
+                    f"Import into {def_name}.{field_name} incomplete: expected {len(roots)} root node(s) "
+                    f"{roots}, but only {added} were added (count {before} -> {before + added}). "
+                    "Webots rejected the VRML; see the Webots console for the parser error."
+                )
+            imported = [field.getMFNode(before + i).getTypeName() for i in range(added)]
+
+        result = {
             "status": "success",
             "def": def_name,
             "field": field_name,
+            "imported_types": imported,
             "value": field_value(field),
         }
+        mismatched = [(want, got) for want, got in zip(roots, imported) if want != got]
+        if mismatched:
+            result["warnings"] = [f"requested {want} but the scene contains {got}" for want, got in mismatched]
+        return result
 
     return await call_main("import_into_field", operation)
 
