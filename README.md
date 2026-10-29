@@ -116,10 +116,21 @@ Use absolute paths. Forward slashes avoid JSON escaping on Windows.
 | `WEBOTS_MCP_LOG` | Host log level, e.g. `debug`. Logs go to stderr; stdout is reserved for MCP messages. |
 | `WEBOTS_MCP_TOKEN` | Optional shared secret that the Supervisor must present. Useful if other local processes could reach the IPC port. |
 | `WEBOTS_MCP_AUTO_RESUME` | Set to `0` to stop `run_simulation` from automatically resuming a paused world. |
+| `WEBOTS_MCP_TOOLSETS` | Comma-separated toolsets to list in addition to the always-listed core tools, or `all` to list every tool. Default: core only. See [Tool exposure](#tool-exposure). |
+
+### Tool exposure
+
+To keep the client's context small, `tools/list` returns only a core set of tools (`sim_start`, `sim_stop`, `sim_pause`, `sim_resume`, `sim_step`, `sim_status`, `project_create`, `get_scene_tree`, `get_node_details`, `create_primitive`, `create_component`, `set_node_field`, `run_simulation`) plus three meta tools:
+
+- `tool_catalog` lists every tool by toolset (`toolset=<name>` adds a one-line summary per tool).
+- `tool_describe` returns the full description and input schema of one tool.
+- `tool_call` invokes any tool, listed or not (hidden tools can also be called directly by name).
+
+Toolsets: `build`, `query`, `modify`, `motors`, `physics`, `experiment`, `snapshots`, `output`, `guide`, `clock` (host-side `sim_*`), `project` (project manager). Set `WEBOTS_MCP_TOOLSETS=motors,physics` to list those groups too, or `all` for the previous behaviour.
 
 ### 3. Let the agent work
 
-Ask your agent to call `get_workflow_guide` first; it returns the registered tool names and the recommended build → experiment → analyze → fix loop.
+Ask your agent to call `get_workflow_guide` first (it lives in the `guide` toolset, so by default it is reached through `tool_call`); it returns the registered tool names and the recommended build → experiment → analyze → fix loop.
 
 Example prompt:
 

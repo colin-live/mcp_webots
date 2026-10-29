@@ -24,6 +24,16 @@ HOST_OWNED = {"set_simulation_speed"}
 
 _CATEGORY = re.compile(r"^\s*\[([^\]]+)\]")
 
+# Toolset name = defining module under webots_mcp.tools, except where the file
+# name is not a good public name. The host uses it to hide/show groups of tools.
+_TOOLSET_ALIASES = {"physics_tools": "physics", "snapshot_tools": "snapshots"}
+
+
+def _toolset_of(fn) -> str:
+    module = getattr(fn, "__module__", "") or ""
+    leaf = module.rsplit(".", 1)[-1] if "." in module else ""
+    return _TOOLSET_ALIASES.get(leaf, leaf)
+
 
 class ToolError(Exception):
     """Raised for protocol-level failures (unknown tool, bad arguments)."""
@@ -41,6 +51,7 @@ class ToolSpec:
         self.description = inspect.getdoc(fn) or ""
         match = _CATEGORY.match(self.description)
         self.category = match.group(1) if match else ""
+        self.toolset = _toolset_of(fn)
         self.input_schema = build_input_schema(fn)
 
     def manifest(self):
@@ -48,6 +59,7 @@ class ToolSpec:
             "name": self.name,
             "description": self.description,
             "category": self.category,
+            "toolset": self.toolset,
             "inputSchema": self.input_schema,
         }
 
