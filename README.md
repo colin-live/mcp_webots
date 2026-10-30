@@ -55,7 +55,7 @@ webots-mcp-host (Rust)
 - **Screenshots and world saves** — capture the actual Webots 3D viewport or persist the current world.
 - **No Python packages required at runtime** — the Supervisor tool registry uses only the standard library and generates JSON schemas from type hints.
 
-A fully connected session exposes **55 tools**: 8 host clock tools, 10 project/world tools, and 37 Supervisor tools.
+A fully connected session exposes **61 tools**: 8 host clock tools, 10 project/world tools, and 43 Supervisor tools.
 
 ## Requirements
 
@@ -199,23 +199,27 @@ When a project is created, the controller is installed in **link** mode by defau
 
 World-file tools edit the `.wbt` on disk. Call `sim_restart` or `sim_reset(kind="reload")` before expecting the running simulation to see the change.
 
-### Scene, physics, queries, and experiments (37)
+### Scene, physics, queries, and experiments (43)
 
 These tools are executed by the Supervisor inside the running Webots process.
 
 | Group | Tools |
 |---|---|
 | Build | `create_primitive`, `create_component`, `create_components`, `add_light`, `set_world_appearance`, `set_viewpoint`, `delete_node`, `clear_created_nodes` |
-| Edit | `set_node_field`, `set_node_pose`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
+| Edit | `set_node_field`, `set_node_pose`, `set_joint_position`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
+| Motors | `get_motors`, `get_motor_state`, `set_motor_target`, `enable_motor_torque` |
 | Physics | `set_node_velocity`, `apply_force`, `apply_torque`, `reset_node_physics` |
 | Query | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_contact_points`, `check_physics_health`, `validate_scene` |
-| Experiment | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation` |
+| Experiment | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation`, `set_simulation_speed` |
 | Snapshots | `save_snapshot`, `restore_snapshot`, `list_snapshots` |
 | Output | `capture_screenshot`, `save_world` |
 | Guide | `get_workflow_guide` |
 
 Useful details:
 
+- `import_into_field` verifies the whole imported subtree, not just the root node. If Webots accepts the root but silently drops nested nodes (typically motors/sensors under a joint whose ancestors contain no `Robot`), it returns `status: "partial"` with `dropped_nodes` and a warning instead of `success`.
+- The motor tools (`get_motors`, `get_motor_state`, `set_motor_target`, `enable_motor_torque`) use Webots' Motor API, which a controller can only apply to its own robot. They work on the robot that runs the MCP supervisor controller: pass `robot_def="self"` or that robot's DEF name (`MCP_SUPERVISOR` in generated projects). Any other robot returns an explicit error; use `set_joint_position` to pose joints on other robots, or drive them from their own controller. Devices must sit under that `Robot` to be kept.
+- `set_joint_position` writes `jointParameters.position` directly (posing/reset, no motor involved), while `set_motor_target` drives the motor controller; a motor holds its target, an unpowered joint falls under gravity.
 - `create_primitive` builds `Box`, `Sphere`, `Cylinder`, or `Capsule` solids. `mass=0` creates a static collider (floor/wall); `mass>0` creates a dynamic body.
 - `run_simulation` starts an observation, waits for it, and returns a summary plus sampled trajectory frames. Set `stop_when_settled=true` to end early, or use `start_simulation` + status/result polling for long runs.
 - `check_physics_health` distinguishes bodies that are correctly static, dynamic, or missing collision geometry — often the fastest way to diagnose objects that fall through the floor.
@@ -281,12 +285,14 @@ The script creates a temporary project, starts Webots, builds the scene, steps t
 | `sim_step` advances more than requested | Another non-synchronized controller is also advancing the simulation. Use a single synchronized Supervisor and robots with `synchronization TRUE`. |
 | Newly added world nodes are not visible | World-file edits (`world_add_robot`, `world_remove_node`) require `sim_restart` or `sim_reset(kind="reload")`. |
 | Runtime-created objects disappear after reset | `sim_reset(kind="simulation")` restores the saved world. Call `save_world` first if the objects should persist. |
+| Motor tools say the robot is not the one running the supervisor | The Motor API only reaches the supervisor robot's own devices. Use `robot_def="self"` (or its DEF), put the motors on that robot, or use `set_joint_position` for other robots. |
+| `import_into_field` returns `partial` with `dropped_nodes` | Webots dropped nested nodes. Motors/sensors need a `Robot` ancestor; import the joint into a `Robot` (e.g. the supervisor robot) instead of a plain `Solid`, then re-check with `get_scene_tree`. |
 | Webots stays open after the host is killed | On Windows the host uses a process tree kill for normal shutdown, but a hard-killed host cannot clean up its child. Close Webots manually. |
 
 ## Limitations
 
 - Windows is the tested platform. The code is intended to be portable, but Linux/macOS path detection and process-tree termination have not been validated.
-- The tool surface covers common scene building, rigid-body physics, and observation workflows — not the entire Webots API (no camera image streams, lidar processing, motor control loops, or custom physics plugins).
+- The tool surface covers common scene building, rigid-body physics, and observation workflows — not the entire Webots API (no camera image streams, lidar processing, motor control of robots other than the supervisor's own, or custom physics plugins).
 - `sim_step` precision assumes the Supervisor is the only controller advancing the world.
 - Tool descriptions are currently written in Chinese; MCP tool names, schemas, and returned JSON keys are stable and language-neutral.
 - Screenshots require a visible 3D viewport. Fast mode may not render every frame.

@@ -4,6 +4,7 @@ import asyncio
 from ..registry import tool
 
 import re
+from collections import Counter
 from ..config import MAX_VRML_LENGTH
 from ..runtime import call_main, fmt, require_finite_number, require_int_range, require_rotation, vector
 from ..scene import (
@@ -12,6 +13,7 @@ from ..scene import (
     get_joint_position,
     get_node,
     has_physics_node,
+    iter_child_nodes,
     set_joint_position as set_joint_position_value,
 )
 from typing import Any
@@ -178,6 +180,39 @@ def _scan_vrml_roots(text: str):
     return roots, None
 
 
+_VRML_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_VRML_NODE_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*\{")
+# Devices Webots only keeps under a Robot ancestor.
+_DEVICE_TYPE_RE = re.compile(r"(Motor|Sensor|Brake|Camera|Lidar|Radar|Receiver|Emitter|Display|Connector)$")
+
+
+def _vrml_node_types(text: str) -> Counter:
+    """Count node types written in a VRML snippet (`Type {`), ignoring strings and comments."""
+    text = _VRML_STRING_RE.sub('""', text)
+    text = re.sub(r"#[^\n]*", "", text)
+    return Counter(_VRML_NODE_RE.findall(text))
+
+
+def _subtree_types(node) -> Counter:
+    """Count node types in the live subtree rooted at `node` (inclusive)."""
+    counts = Counter([node.getTypeName()])
+    for _field_name, child in iter_child_nodes(node):
+        counts += _subtree_types(child)
+    return counts
+
+
+def _dropped_nodes(vrml_string: str, imported_nodes) -> dict:
+    """Types written in the VRML that are missing from the imported subtrees.
+
+    Webots can accept an import yet silently discard nested nodes (for example
+    a motor or sensor under a HingeJoint that has no Robot ancestor), so the
+    top-level count alone cannot prove the import was complete.
+    """
+    actual = Counter()
+    for imported in imported_nodes:
+        actual += _subtree_types(imported)
+    return dict(_vrml_node_types(vrml_string) - actual)
+
 @tool
 async def import_into_field(def_name: str, field_name: str, vrml_string: str) -> str:
     """[修改] 向已有节点的 SFNode / MFNode 字段导入 VRML 子节点，
@@ -185,7 +220,9 @@ async def import_into_field(def_name: str, field_name: str, vrml_string: str) ->
 
     导入失败（语法错误、Webots 拒绝）时返回 error，不再误报 success。
     注意 HingeJoint 的子刚体字段是 `endPoint Solid { ... }`（不是 start/end），
-    且 endPoint 的值必须写节点类型名。成功时返回 imported_types 供核对。"""
+    且 endPoint 的值必须写节点类型名。成功时返回 imported_types 供核对。
+    若 Webots 接受了根节点却丢弃了嵌套节点（如没有 Robot 祖先时的电机/传感器），
+    返回 status="partial"，并在 dropped_nodes 中列出缺失的节点类型。"""
 
     def operation():
         if not isinstance(vrml_string, str) or not vrml_string.strip():
@@ -228,6 +265,7 @@ async def import_into_field(def_name: str, field_name: str, vrml_string: str) ->
                     f"Import into {def_name}.{field_name} had no effect: Webots rejected the VRML "
                     "(see the Webots console for the parser error)."
                 )
+            imported_nodes = [after_node]
             imported = [after_node.getTypeName()]
         else:
             before = field.getCount()
@@ -239,7 +277,8 @@ async def import_into_field(def_name: str, field_name: str, vrml_string: str) ->
                     f"{roots}, but only {added} were added (count {before} -> {before + added}). "
                     "Webots rejected the VRML; see the Webots console for the parser error."
                 )
-            imported = [field.getMFNode(before + i).getTypeName() for i in range(added)]
+            imported_nodes = [field.getMFNode(before + i) for i in range(added)]
+            imported = [n.getTypeName() for n in imported_nodes]
 
         result = {
             "status": "success",
@@ -251,6 +290,25 @@ async def import_into_field(def_name: str, field_name: str, vrml_string: str) ->
         mismatched = [(want, got) for want, got in zip(roots, imported) if want != got]
         if mismatched:
             result["warnings"] = [f"requested {want} but the scene contains {got}" for want, got in mismatched]
+
+        # Webots can accept the root node yet silently drop nested ones, so
+        # compare every node type written in the VRML with the live subtree.
+        dropped = _dropped_nodes(vrml_string, imported_nodes)
+        if dropped:
+            result["status"] = "partial"
+            result["dropped_nodes"] = dropped
+            warnings = result.setdefault("warnings", [])
+            warnings.append(
+                "Webots imported the root node(s) but dropped nested nodes: "
+                + ", ".join(f"{t} x{n}" for t, n in sorted(dropped.items()))
+                + ". The imported subtree is incomplete; remove it and fix the VRML."
+            )
+            if any(_DEVICE_TYPE_RE.search(t) for t in dropped):
+                warnings.append(
+                    "Dropped device nodes (motors/sensors/...) usually mean the joint has no Robot "
+                    "ancestor: Webots only keeps devices under a Robot. Import into a Robot instead "
+                    "of a plain Solid."
+                )
         return result
 
     return await call_main("import_into_field", operation)

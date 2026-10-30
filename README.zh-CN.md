@@ -56,7 +56,7 @@ webots-mcp-host (Rust)
 - **截图与保存世界**：截取真实的 Webots 3D 视口，或把当前世界写回磁盘。
 - **运行时不依赖第三方 Python 包**：工具注册表只用标准库，并从类型注解生成 JSON Schema。
 
-完整连接后共有 **55 个工具**：8 个主进程时钟工具、10 个项目/世界工具、37 个 Supervisor 工具。
+完整连接后共有 **61 个工具**：8 个主进程时钟工具、10 个项目/世界工具、43 个 Supervisor 工具。
 
 ## 环境要求
 
@@ -189,23 +189,27 @@ sim_stop()
 
 世界文件工具改的是磁盘上的 `.wbt`，运行中的仿真想看到变化，需要 `sim_restart` 或 `sim_reset(kind="reload")`。
 
-### 场景、物理、查询与实验（37）
+### 场景、物理、查询与实验（43）
 
 这些工具由运行在 Webots 内的 Supervisor 执行。
 
 | 分组 | 工具 |
 |---|---|
 | 构建 | `create_primitive`, `create_component`, `create_components`, `add_light`, `set_world_appearance`, `set_viewpoint`, `delete_node`, `clear_created_nodes` |
-| 修改 | `set_node_field`, `set_node_pose`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
+| 修改 | `set_node_field`, `set_node_pose`, `set_joint_position`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
+| 电机 | `get_motors`, `get_motor_state`, `set_motor_target`, `enable_motor_torque` |
 | 物理 | `set_node_velocity`, `apply_force`, `apply_torque`, `reset_node_physics` |
 | 查询 | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_contact_points`, `check_physics_health`, `validate_scene` |
-| 实验 | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation` |
+| 实验 | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation`, `set_simulation_speed` |
 | 快照 | `save_snapshot`, `restore_snapshot`, `list_snapshots` |
 | 输出 | `capture_screenshot`, `save_world` |
 | 指南 | `get_workflow_guide` |
 
 几个要点：
 
+- `import_into_field` 会校验整棵导入的子树，而不只是根节点。如果 Webots 接受了根节点却悄悄丢弃了嵌套节点（典型情况：关节的祖先里没有 `Robot` 时，其下的电机/传感器会被丢弃），会返回 `status: "partial"`，并附带 `dropped_nodes` 和警告，而不是 `success`。
+- 电机工具（`get_motors`、`get_motor_state`、`set_motor_target`、`enable_motor_torque`）使用 Webots 的 Motor API，而控制器只能操作自己所在机器人的设备。因此它们只对运行 MCP supervisor 控制器的那个机器人有效：`robot_def` 传 `"self"` 或该机器人的 DEF 名称（自动生成的项目里是 `MCP_SUPERVISOR`）。其它机器人会返回明确的错误；要摆其它机器人的关节姿态请用 `set_joint_position`，或在它自己的控制器里驱动。设备必须位于该 `Robot` 之下才会被保留。
+- `set_joint_position` 直接写 `jointParameters.position`（摆姿态/复位，不经过电机）；`set_motor_target` 则驱动电机控制器——电机会保持目标位置，而不受力的关节会在重力下摆动。
 - `create_primitive` 支持 `Box`、`Sphere`、`Cylinder`、`Capsule`。`mass=0` 是静态碰撞体（地面/墙）；`mass>0` 是受重力的动态物体。
 - `run_simulation` 一次完成「启动观测 → 等待 → 返回 summary + 抽样轨迹」。可设 `stop_when_settled=true` 提前结束；长实验用 `start_simulation` + 状态/结果轮询。
 - `check_physics_health` 会区分正确的静态体、动态体，以及缺少碰撞几何的物体，是排查「穿地」最快的方法。
@@ -286,12 +290,14 @@ python docs/make_demo.py --webots-home "C:\Program Files\Webots"
 | `sim_step` 前进的步数超过请求 | 还有其他非同步控制器在推进仿真。只保留一个同步 Supervisor，并让机器人使用 `synchronization TRUE`。 |
 | 新加的世界节点不生效 | 世界文件工具改的是磁盘文件，需要 `sim_restart` 或 `sim_reset(kind="reload")`。 |
 | reset 后运行时创建的对象消失 | `sim_reset(kind="simulation")` 会恢复已保存的世界；需要保留就先 `save_world`。 |
+| 电机工具提示该机器人不是运行 supervisor 的机器人 | Motor API 只能访问 supervisor 所在机器人自己的设备。请使用 `robot_def="self"`（或它的 DEF），把电机放在该机器人上；其它机器人用 `set_joint_position`。 |
+| `import_into_field` 返回 `partial` 并带 `dropped_nodes` | Webots 丢弃了嵌套节点。电机/传感器需要有 `Robot` 祖先：把关节导入 `Robot`（如 supervisor 机器人）而不是普通 `Solid`，再用 `get_scene_tree` 复核。 |
 | 主进程被强杀后 Webots 还在 | Windows 正常退出会结束进程树，但被硬杀的宿主无法清理子进程，请手动关闭 Webots。 |
 
 ## 限制
 
 - 目前只在 Windows 上验证。代码按可移植方式编写，但 Linux/macOS 的路径探测和进程树结束尚未实测。
-- 工具覆盖常见的场景搭建、刚体物理和观测流程，不是完整 Webots API（不含摄像头图像流、激光雷达处理、电机控制环和自定义物理插件）。
+- 工具覆盖常见的场景搭建、刚体物理和观测流程，不是完整 Webots API（不含摄像头图像流、激光雷达处理、对 supervisor 自身机器人以外的电机控制和自定义物理插件）。
 - `sim_step` 的精确步数依赖 Supervisor 是唯一推进世界的控制器。
 - 工具描述目前为中文；MCP 工具名、参数 Schema 和返回 JSON 字段稳定且与语言无关。
 - 截图需要可见的 3D 视口；`fast` 模式不保证每帧都渲染。
