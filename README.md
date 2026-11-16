@@ -55,7 +55,7 @@ webots-mcp-host (Rust)
 - **Screenshots and world saves** — capture the actual Webots 3D viewport or persist the current world.
 - **No Python packages required at runtime** — the Supervisor tool registry uses only the standard library and generates JSON schemas from type hints.
 
-A fully connected session exposes **61 tools**: 8 host clock tools, 10 project/world tools, and 43 Supervisor tools.
+A fully connected session exposes **62 tools**: 8 host clock tools, 10 project/world tools, and 44 Supervisor tools.
 
 ## Requirements
 
@@ -199,7 +199,7 @@ When a project is created, the controller is installed in **link** mode by defau
 
 World-file tools edit the `.wbt` on disk. Call `sim_restart` or `sim_reset(kind="reload")` before expecting the running simulation to see the change.
 
-### Scene, physics, queries, and experiments (43)
+### Scene, physics, queries, and experiments (44)
 
 These tools are executed by the Supervisor inside the running Webots process.
 
@@ -209,7 +209,7 @@ These tools are executed by the Supervisor inside the running Webots process.
 | Edit | `set_node_field`, `set_node_pose`, `set_joint_position`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
 | Motors | `get_motors`, `get_motor_state`, `set_motor_target`, `enable_motor_torque` |
 | Physics | `set_node_velocity`, `apply_force`, `apply_torque`, `reset_node_physics` |
-| Query | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_contact_points`, `check_physics_health`, `validate_scene` |
+| Query | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_joint_info`, `get_contact_points`, `check_physics_health`, `validate_scene` |
 | Experiment | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation`, `set_simulation_speed` |
 | Snapshots | `save_snapshot`, `restore_snapshot`, `list_snapshots` |
 | Output | `capture_screenshot`, `save_world` |

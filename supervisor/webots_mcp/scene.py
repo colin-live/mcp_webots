@@ -95,6 +95,46 @@ def get_node(ref):
     return node
 
 
+# ---------- read-only lookup by node id ----------
+
+MAX_NODE_ID = 2**31 - 1
+
+
+def parse_node_id_ref(ref):
+    """The node id of an 'id:<n>' reference, or None when `ref` is not an id reference."""
+    if not isinstance(ref, str) or not ref.startswith("id:"):
+        return None
+    text = ref[3:].strip()
+    if not (text.isascii() and text.isdigit()) or not 0 < int(text) <= MAX_NODE_ID:
+        raise ValueError("A node id reference must look like 'id:<positive integer>', e.g. 'id:19'")
+    return int(text)
+
+
+def get_node_by_id(node_id):
+    try:
+        node = supervisor.getFromId(node_id)
+    except Exception:
+        node = None
+    if node is None:
+        raise ValueError(
+            f"No node with id {node_id}. Ids come from get_scene_tree, get_nodes_by_type and "
+            "get_node_details, and they change when the world is reloaded."
+        )
+    return node
+
+
+def get_readable_node(ref):
+    """Like get_node(), and also accepts 'id:<n>' (the id reported by get_scene_tree,
+    get_nodes_by_type and get_node_details).
+
+    For read-only tools only. An id reaches nodes that have no DEF name (devices,
+    jointParameters), which is the point. Modifying tools keep DEF-only addressing: ids are not
+    stable across world reloads, so a stale id could silently edit the wrong node.
+    """
+    node_id = parse_node_id_ref(ref)
+    return get_node_by_id(node_id) if node_id is not None else get_node(ref)
+
+
 JOINT_PARAM_TYPES = {  # joint type -> {axis: parameters node type}
     "HingeJoint": {1: "HingeJointParameters"},
     "Hinge2Joint": {1: "HingeJointParameters", 2: "JointParameters"},
@@ -140,6 +180,134 @@ def set_joint_position(joint, position, axis=1):
     if pos is None:
         raise ValueError("jointParameters has no position field")
     pos.setSFFloat(float(position))
+
+
+# ---------- joint description (read-only) ----------
+
+_MISSING = object()
+_JOINT_PARAM_FIELDS = (
+    "axis", "anchor", "position", "minStop", "maxStop",
+    "springConstant", "dampingConstant", "staticFriction",
+)
+_MOTOR_FIELDS = {
+    "RotationalMotor": ("maxTorque", "maxVelocity", "minPosition", "maxPosition"),
+    "LinearMotor": ("maxForce", "maxVelocity", "minPosition", "maxPosition"),
+}
+_SENSOR_TYPES = ("PositionSensor",)
+_DEVICE_FIELD_BY_AXIS = {1: "device", 2: "device2"}
+
+
+def _read_field(node, name):
+    """The value of a field, `_MISSING` when the node has no such field."""
+    field = node.getField(name)
+    if field is None:
+        return _MISSING
+    try:
+        return field_value(field)
+    except Exception as exc:
+        return {"error_type": type(exc).__name__, "error": str(exc)}
+
+
+def describe_device(device, axis):
+    type_name = device.getTypeName()
+    info = {
+        "id": device.getId(),
+        "def": device.getDef() or None,
+        "type": type_name,
+        "axis_index": axis,
+    }
+    for key in ("name",) + _MOTOR_FIELDS.get(type_name, ()):
+        value = _read_field(device, key)
+        if value is not _MISSING:
+            info[key] = value
+    return info
+
+
+def describe_joint(joint):
+    """Read-only description of a HingeJoint / Hinge2Joint / SliderJoint.
+
+    Returns the joint parameters of each axis (axis, anchor, stops, ...), every device on the
+    joint (motors, sensors, brakes: their `name`, which is what Robot.getDevice() looks up, and
+    motor limits), and `warnings` for things that make a joint ambiguous or incomplete: a missing
+    jointParameters or endPoint, several motors or sensors on one axis, empty or duplicate device
+    names.
+    """
+    joint_type = joint.getTypeName()
+    param_types = JOINT_PARAM_TYPES.get(joint_type)
+    if param_types is None:
+        raise ValueError(f"{joint_type} is not a HingeJoint / Hinge2Joint / SliderJoint")
+
+    warnings = []
+    axes = []
+    devices = []
+    seen_names = {}
+
+    for axis, params_type in param_types.items():
+        params_name = "jointParameters" if axis == 1 else "jointParameters2"
+        field = joint.getField(params_name)
+        params = field.getSFNode() if field is not None else None
+        entry = {"axis_index": axis, "field": params_name, "expected_type": params_type, "node": brief_node(params)}
+        if params is None:
+            entry["values"] = None
+            warnings.append(f"{params_name} is null: Webots default joint parameters apply, nothing was read")
+        else:
+            values = {}
+            for key in _JOINT_PARAM_FIELDS:
+                value = _read_field(params, key)
+                if value is not _MISSING:
+                    values[key] = value
+            entry["values"] = values
+        axes.append(entry)
+
+        device_field = joint.getField(_DEVICE_FIELD_BY_AXIS[axis])
+        axis_devices = []
+        if device_field is not None:
+            for i in range(device_field.getCount()):
+                device = device_field.getMFNode(i)
+                if device is not None:
+                    axis_devices.append(describe_device(device, axis))
+        devices.extend(axis_devices)
+
+        for kind, matches in (
+            ("motor", [d for d in axis_devices if d["type"] in _MOTOR_FIELDS]),
+            ("sensor", [d for d in axis_devices if d["type"] in _SENSOR_TYPES]),
+        ):
+            if len(matches) > 1:
+                names = ", ".join(repr(d.get("name")) for d in matches)
+                warnings.append(
+                    f"{joint_type} axis {axis} has {len(matches)} {kind}s ({names}); "
+                    f"anything that picks the {kind} automatically takes the first one"
+                )
+
+    for device in devices:
+        name = device.get("name")
+        if name == "":
+            warnings.append(
+                f"{device['type']} (id {device['id']}) has an empty name, so Robot.getDevice() cannot find it"
+            )
+        elif isinstance(name, str):
+            seen_names.setdefault(name, []).append(device["type"])
+    for name, types in seen_names.items():
+        if len(types) > 1:
+            warnings.append(f"device name {name!r} is used by {len(types)} devices on this joint ({', '.join(types)})")
+
+    end_field = joint.getField("endPoint")
+    end_point = end_field.getSFNode() if end_field is not None else None
+    if end_point is None:
+        warnings.append("endPoint is null: the joint has nothing attached")
+
+    return {
+        "joint": brief_node(joint),
+        "joint_type": joint_type,
+        "axes": axes,
+        "devices": devices,
+        "summary": {
+            "motor_names": [d.get("name") for d in devices if d["type"] in _MOTOR_FIELDS],
+            "sensor_names": [d.get("name") for d in devices if d["type"] in _SENSOR_TYPES],
+        },
+        "end_point": brief_node(end_point),
+        "warnings": warnings,
+    }
 
 
 def has_physics_node(node):

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 MCP_DIR = Path(__file__).resolve().parent.parent
@@ -140,6 +141,23 @@ try:
     check("real tool runs on the main thread while PAUSED", d["status"] == "success" and not d["_isError"], d)
     d = call("get_workflow_guide")
     check("get_workflow_guide", d["status"] == "success" and "set_simulation_speed" not in json.dumps(d, ensure_ascii=False), str(d)[:300])
+
+    # on-demand toolsets: the query toolset (incl. get_joint_info) is reachable through the meta tools
+    cat = call("tool_catalog")
+    check("tool_catalog lists get_joint_info in the query toolset", "get_joint_info" in json.dumps(cat), str(cat)[:300])
+    def call_with(tool, arguments):
+        """Like call(), for tools that have their own `name` argument."""
+        reply = rpc("tools/call", {"name": tool, "arguments": arguments})
+        data = json.loads(reply["result"]["content"][0]["text"])
+        data["_isError"] = reply["result"]["isError"]
+        return data
+
+    desc = call_with("tool_describe", {"name": "get_joint_info"})
+    check("tool_describe get_joint_info: takes def_name", "def_name" in json.dumps(desc) and "id:<n>" in json.dumps(desc, ensure_ascii=False), str(desc)[:300])
+    d = call_with("tool_call", {"name": "get_node_details", "arguments": {"def_name": "id:abc"}})
+    check("id reference is validated end to end (host -> supervisor)", "id:<positive integer>" in json.dumps(d), str(d)[:300])
+    d = call_with("tool_call", {"name": "set_node_field", "arguments": {"def_name": "id:5", "field_name": "name", "value": "x"}})
+    check("modifying tools stay DEF-only end to end", d.get("_isError") or d.get("status") == "error", str(d)[:300])
     d = call("create_primitive", shape="nonsense")
     check("tool-level validation error -> isError", d["_isError"] or d.get("status") == "error", d)
 
@@ -208,6 +226,9 @@ try:
         check("project manager restarted after crash", ok)
     else:
         print("SKIP project manager crash test (pid not found in log)")
+except Exception:
+    traceback.print_exc()
+    failed += 1
 finally:
     try:
         host.stdin.close()

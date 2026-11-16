@@ -6,7 +6,16 @@ from ..registry import tool
 from ..config import MAX_TREE_DEPTH
 from ..physics import physics_health
 from ..runtime import TIME_STEP, call_main, require_finite_number, require_identifier, require_int_range, supervisor, tool_error
-from ..scene import collect_scene_tree, field_value, find_nodes_by_type, get_node, physics_role, safe_node_state
+from ..scene import (
+    collect_scene_tree,
+    describe_joint,
+    field_value,
+    find_nodes_by_type,
+    get_node,
+    get_readable_node,
+    physics_role,
+    safe_node_state,
+)
 from ..snapshots import contact_tracking
 
 # ------------------------------------------------------------
@@ -32,10 +41,14 @@ async def get_scene_tree(max_depth: int = 4, include_fields: bool = False) -> st
 
 @tool
 async def get_node_details(def_name: str) -> str:
-    """[查询] 按 DEF 名称（或 'type:WorldInfo' 等）查询节点状态和全部字段值。"""
+    """[查询] 按 DEF 名称（或 'type:WorldInfo'、'id:<n>'）查询节点状态和全部字段值。
+
+    'id:<n>' 用 get_scene_tree / get_nodes_by_type / 本工具返回的节点 id 定位，可以查询没有 DEF 的节点
+    （电机、传感器、jointParameters 等）；id 在世界重载后会变，只用于只读查询。
+    """
 
     def operation():
-        node = get_node(def_name)
+        node = get_readable_node(def_name)
         fields = {}
 
         for i in range(node.getNumberOfFields()):
@@ -64,10 +77,10 @@ async def get_node_details(def_name: str) -> str:
 
 @tool
 async def get_node_state(def_name: str) -> str:
-    """[查询] 查询节点当前位置、姿态（旋转矩阵）和速度（有 Physics 时）。"""
+    """[查询] 查询节点当前位置、姿态（旋转矩阵）和速度（有 Physics 时）。def_name 也接受 'id:<n>'。"""
     return await call_main(
         "get_node_state",
-        lambda: {"status": "success", "state": safe_node_state(get_node(def_name))},
+        lambda: {"status": "success", "state": safe_node_state(get_readable_node(def_name))},
     )
 
 
@@ -81,6 +94,23 @@ async def get_nodes_by_type(type_name: str) -> str:
         return {"status": "success", "type": name, "count": len(nodes), "nodes": nodes}
 
     return await call_main("get_nodes_by_type", operation)
+
+
+@tool
+async def get_joint_info(def_name: str) -> str:
+    """[查询] 只读描述一个关节（HingeJoint / Hinge2Joint / SliderJoint）：关节类型、每个轴的 jointParameters
+    （axis、anchor、position、minStop / maxStop、阻尼等）、关节上的全部 device（电机、位置传感器、制动器）
+    的类型、name（Robot.getDevice 用它查找）和电机上限（maxTorque / maxForce、maxVelocity、minPosition /
+    maxPosition），以及 endPoint。
+
+    warnings 会指出容易出错的地方：jointParameters 或 endPoint 为空、同一个轴上有多个电机或传感器
+    （按“自动取第一个”的程序会选第一个）、device 名称为空或重名。def_name 也接受 'id:<n>'。
+    """
+
+    def operation():
+        return {"status": "success", **describe_joint(get_readable_node(def_name))}
+
+    return await call_main("get_joint_info", operation)
 
 
 TOUCH_TOLERANCE = 1e-3  # metres: two tracked nodes report "the same" contact point

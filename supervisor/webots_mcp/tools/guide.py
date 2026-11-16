@@ -41,7 +41,7 @@ async def get_workflow_guide() -> str:
             "项目（project manager）": PROJECT_TOOLS,
             "查询": [
                 "get_scene_tree", "get_node_details", "get_node_state",
-                "get_nodes_by_type", "get_contact_points", "validate_scene",
+                "get_nodes_by_type", "get_joint_info", "get_contact_points", "validate_scene",
                 "check_physics_health", "get_motors", "get_motor_state",
             ],
             "构建": [
@@ -96,6 +96,10 @@ async def get_workflow_guide() -> str:
             "apply_force/apply_torque 只作用一个物理步；持续推动请用 set_node_velocity",
             "Webots 世界重载会重启本控制器：场景中未保存的改动、快照和任务都会丢失",
             "关节摆姿态用 set_joint_position（直接改 jointParameters）；实时电机控制用 get_motors + set_motor_target（走 Motor API）",
+            "没有 DEF 的节点（电机、传感器、jointParameters）：get_scene_tree / get_nodes_by_type 会给出节点 id，"
+            "get_node_details / get_node_state / get_joint_info 接受 'id:<n>' 形式的引用（只读；修改类工具仍只认 DEF，id 在世界重载后会变）",
+            "查关节上的 device 名称、axis、minStop/maxStop、电机上限：get_joint_info(关节 DEF)；"
+            "这是只读的，其它机器人的电机也能查（get_motors 只能访问 supervisor 自己的机器人）",
         ],
     })
 

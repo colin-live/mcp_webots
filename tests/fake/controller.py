@@ -12,6 +12,12 @@ from unittest.mock import MagicMock
 _STATE_DIR = os.environ.get("FAKE_WEBOTS_STATE_DIR", ".")
 
 
+class Node:
+    """Node-type constants used by `tools/motors.py`; only their identity matters in the tests."""
+    ROTATIONAL_MOTOR = 1
+    LINEAR_MOTOR = 2
+
+
 class Supervisor:
     SIMULATION_MODE_PAUSE = 0
     SIMULATION_MODE_REAL_TIME = 1

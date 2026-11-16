@@ -56,7 +56,7 @@ webots-mcp-host (Rust)
 - **截图与保存世界**：截取真实的 Webots 3D 视口，或把当前世界写回磁盘。
 - **运行时不依赖第三方 Python 包**：工具注册表只用标准库，并从类型注解生成 JSON Schema。
 
-完整连接后共有 **61 个工具**：8 个主进程时钟工具、10 个项目/世界工具、43 个 Supervisor 工具。
+完整连接后共有 **62 个工具**：8 个主进程时钟工具、10 个项目/世界工具、44 个 Supervisor 工具。
 
 ## 环境要求
 
@@ -189,7 +189,7 @@ sim_stop()
 
 世界文件工具改的是磁盘上的 `.wbt`，运行中的仿真想看到变化，需要 `sim_restart` 或 `sim_reset(kind="reload")`。
 
-### 场景、物理、查询与实验（43）
+### 场景、物理、查询与实验（44）
 
 这些工具由运行在 Webots 内的 Supervisor 执行。
 
@@ -199,7 +199,7 @@ sim_stop()
 | 修改 | `set_node_field`, `set_node_pose`, `set_joint_position`, `import_into_field`, `set_world_physics`, `set_contact_properties` |
 | 电机 | `get_motors`, `get_motor_state`, `set_motor_target`, `enable_motor_torque` |
 | 物理 | `set_node_velocity`, `apply_force`, `apply_torque`, `reset_node_physics` |
-| 查询 | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_contact_points`, `check_physics_health`, `validate_scene` |
+| 查询 | `get_scene_tree`, `get_node_details`, `get_node_state`, `get_nodes_by_type`, `get_joint_info`, `get_contact_points`, `check_physics_health`, `validate_scene` |
 | 实验 | `get_simulation_info`, `start_simulation`, `run_simulation`, `get_simulation_status`, `get_simulation_result`, `list_simulations`, `reset_simulation`, `set_simulation_speed` |
 | 快照 | `save_snapshot`, `restore_snapshot`, `list_snapshots` |
 | 输出 | `capture_screenshot`, `save_world` |
